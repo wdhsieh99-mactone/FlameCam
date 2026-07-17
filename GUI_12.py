@@ -1,6 +1,7 @@
 import json
 import os
 import queue
+import subprocess
 import threading
 import time
 import tkinter as tk
@@ -16,6 +17,8 @@ from picamera2.outputs import FfmpegOutput
 PREVIEW_SIZE = (640, 360)
 MAIN_SIZE = (1920, 1080)
 PREVIEW_INTERVAL_MS = 66  # ~15 fps
+THUMB_SIZE = (96, 54)
+THUMBS_PER_ROW = 6
 
 # Hardcoded fallback used to seed a fresh settings file, to fill in any key
 # missing/invalid in a saved or hand-edited settings file, and as the target
@@ -51,6 +54,61 @@ FACTORY_RANGES = {
 }
 
 CONFIG_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), "gui12_settings.json")
+
+# ---------------------------------------------------------------------- #
+# Look & feel: one neutral light palette + accent, applied consistently
+# across every widget-building method below (via ttk.Style for Frames/
+# Labels/Notebook, and style_button/style_entry for the plain tk widgets
+# that need to keep tk-only features - Scale's `resolution`, Entry's
+# state read-back matching the existing tests/automation).
+# ---------------------------------------------------------------------- #
+COLORS = {
+    "bg": "#eef1f6",
+    "surface": "#ffffff",
+    "border": "#d7dce3",
+    "text": "#1f2937",
+    "text_muted": "#6b7280",
+    "primary": "#2f6fed",
+    "primary_dark": "#1d4fc4",
+    "primary_light": "#e8f0fe",
+    "danger": "#dc2626",
+    "danger_dark": "#a91c1c",
+    "header_bg": "#1f2b45",
+}
+
+FONT_FAMILY = "Helvetica"
+FONT_BASE = (FONT_FAMILY, 10)
+FONT_HEADER = (FONT_FAMILY, 17, "bold")
+FONT_SUBHEADER = (FONT_FAMILY, 11)
+FONT_SECTION = (FONT_FAMILY, 11, "bold")
+FONT_BUTTON = (FONT_FAMILY, 10, "bold")
+
+_BUTTON_STYLES = {
+    "primary": dict(bg=COLORS["primary"], fg="white", activebackground=COLORS["primary_dark"],
+                     activeforeground="white", disabledforeground="#c7d5fa"),
+    "danger": dict(bg=COLORS["danger"], fg="white", activebackground=COLORS["danger_dark"],
+                    activeforeground="white", disabledforeground="#f3c2c2"),
+    "secondary": dict(bg=COLORS["surface"], fg=COLORS["text"], activebackground=COLORS["primary_light"],
+                       activeforeground=COLORS["primary"], disabledforeground=COLORS["text_muted"]),
+}
+
+
+def style_button(button, kind="secondary"):
+    button.configure(
+        relief="flat", bd=0, cursor="hand2", font=FONT_BUTTON, padx=12, pady=6,
+        highlightthickness=1, highlightbackground=COLORS["border"], highlightcolor=COLORS["border"],
+        **_BUTTON_STYLES[kind],
+    )
+
+
+def style_entry(entry):
+    entry.configure(
+        relief="flat", bd=1, highlightthickness=1,
+        highlightbackground=COLORS["border"], highlightcolor=COLORS["primary"],
+        bg="white", fg=COLORS["text"], font=FONT_BASE,
+        disabledbackground=COLORS["bg"], disabledforeground=COLORS["text_muted"],
+        readonlybackground=COLORS["primary_light"],
+    )
 
 
 def _fmt_num(value):
@@ -285,66 +343,106 @@ class CameraTestGUI:
     # ---------------------------------------------------------------- #
     # Widget construction
     # ---------------------------------------------------------------- #
+    def _setup_style(self):
+        self.root.configure(bg=COLORS["bg"])
+        style = ttk.Style(self.root)
+        try:
+            style.theme_use("clam")
+        except tk.TclError:
+            pass
+
+        style.configure(".", background=COLORS["bg"], foreground=COLORS["text"], font=FONT_BASE)
+        style.configure("TFrame", background=COLORS["bg"])
+        style.configure("TLabel", background=COLORS["bg"], foreground=COLORS["text"], font=FONT_BASE)
+        style.configure(
+            "TLabelframe", background=COLORS["surface"], bordercolor=COLORS["border"],
+            relief="solid", borderwidth=1,
+        )
+        style.configure(
+            "TLabelframe.Label", background=COLORS["surface"], foreground=COLORS["text"], font=FONT_SECTION,
+        )
+        style.configure("TNotebook", background=COLORS["bg"], borderwidth=0)
+        style.configure(
+            "TNotebook.Tab", background=COLORS["bg"], foreground=COLORS["text_muted"],
+            font=FONT_SECTION, padding=(18, 10), borderwidth=0,
+        )
+        style.map(
+            "TNotebook.Tab",
+            background=[("selected", COLORS["surface"])],
+            foreground=[("selected", COLORS["primary"])],
+        )
+
     def create_widgets(self):
-        self.Frame_title = tk.Frame(self.root)
-        self.Frame_title.pack(fill="x")
+        self._setup_style()
+
+        header = tk.Frame(self.root, bg=COLORS["header_bg"])
+        header.pack(fill="x")
+        header_inner = tk.Frame(header, bg=COLORS["header_bg"])
+        header_inner.pack(fill="x", padx=20, pady=14)
+
+        tk.Label(
+            header_inner, text="ReactingFlow Lab", bg=COLORS["header_bg"], fg="white", font=FONT_HEADER,
+        ).pack(side="left")
+        tk.Label(
+            header_inner, text="  Camera Test Controller", bg=COLORS["header_bg"], fg="#9fb3d9",
+            font=FONT_SUBHEADER,
+        ).pack(side="left", padx=(4, 0))
 
         try:
             self.img = tk.PhotoImage(file="ReFlowLab_signature.gif")
-            tk.Label(self.Frame_title, image=self.img).grid(row=0, column=1)
+            tk.Label(header_inner, image=self.img, bg=COLORS["header_bg"]).pack(side="right")
         except tk.TclError:
             self.img = None
-
-        tk.Label(
-            self.Frame_title, text="ReactingFlow Lab", fg="#DC143C",
-            font=("Georgia", 18, "bold"), pady=3,
-        ).grid(row=0, column=0)
 
         self.notebook = ttk.Notebook(self.root)
         self.notebook.pack(fill="both", expand=True)
 
-        tab_camera = tk.Frame(self.notebook)
-        tab_settings = tk.Frame(self.notebook)
+        tab_camera = ttk.Frame(self.notebook)
+        tab_settings = ttk.Frame(self.notebook)
         self.notebook.add(tab_camera, text="Camera Test")
         self.notebook.add(tab_settings, text="Settings")
 
-        Frame_main = tk.Frame(tab_camera)
+        Frame_main = ttk.Frame(tab_camera)
         Frame_main.pack(fill="both", expand=True)
 
-        Frame_left = tk.Frame(Frame_main)
-        Frame_left.pack(side="left", fill="y", padx=15, pady=10)
+        Frame_left = ttk.Frame(Frame_main)
+        Frame_left.pack(side="left", fill="y", padx=15, pady=15)
 
-        Frame_right = tk.Frame(Frame_main)
-        Frame_right.pack(side="left", fill="both", expand=True, padx=15, pady=10)
+        Frame_right = ttk.Frame(Frame_main)
+        Frame_right.pack(side="left", fill="both", expand=True, padx=(0, 15), pady=15)
 
         self._build_condition_frame(Frame_left)
         self._build_controls_frame(Frame_left)
         self._build_preview_frame(Frame_right)
 
-        self.frame_actions = tk.Frame(tab_camera)
-        self.frame_actions.pack(fill="x", pady=10)
+        self.frame_actions = ttk.Frame(tab_camera)
+        self.frame_actions.pack(fill="x", padx=15, pady=(0, 15))
         self._build_action_frame(self.frame_actions)
 
         self._build_settings_tab(tab_settings)
 
     def _build_condition_frame(self, parent):
-        frame = tk.LabelFrame(parent, text="Test condition", font=("Georgia", 11, "bold"), padx=10, pady=10)
-        frame.pack(fill="x", pady=(0, 10))
+        frame = ttk.LabelFrame(parent, text="Test condition", padding=12)
+        frame.pack(fill="x", pady=(0, 12))
 
         def add_picklist_row(row, label, key, var):
-            tk.Label(frame, text=label, width=16, anchor="w").grid(row=row, column=0, sticky="w", pady=3)
+            tk.Label(
+                frame, text=label, width=16, anchor="w", bg=COLORS["surface"], fg=COLORS["text"], font=FONT_BASE,
+            ).grid(row=row, column=0, sticky="w", pady=4)
             entry = tk.Entry(frame, textvariable=var, width=12, justify="center", state="readonly")
-            entry.grid(row=row, column=1, padx=5)
+            style_entry(entry)
+            entry.grid(row=row, column=1, padx=6)
             # Looks up self.presets[key] at click time (not bound at row-build
             # time) so a Settings-tab Apply that reassigns self.presets is
             # picked up on the very next click without rebuilding this row.
             button = tk.Button(
-                frame, text="Select", bg="#D3D3D3", width=8,
+                frame, text="Select", width=8,
                 command=lambda key=key, label=label, var=var: self.show_picklist(
                     f"Select {label}", self.presets[key], var
                 ),
             )
-            button.grid(row=row, column=2, padx=5)
+            style_button(button, "secondary")
+            button.grid(row=row, column=2, padx=6)
             self.control_widgets.append(button)
 
         add_picklist_row(0, "Blending gas", "blend_gas", self.blend_gas_var)
@@ -353,24 +451,33 @@ class CameraTestGUI:
         add_picklist_row(3, "Lance depth (mm)", "lance_depth", self.lance_depth_var)
         add_picklist_row(4, "Lance size (mm)", "lance_size", self.lance_size_var)
 
-        tk.Label(frame, text="kW", width=16, anchor="w").grid(row=5, column=0, sticky="w", pady=3)
+        tk.Label(
+            frame, text="kW", width=16, anchor="w", bg=COLORS["surface"], fg=COLORS["text"], font=FONT_BASE,
+        ).grid(row=5, column=0, sticky="w", pady=4)
         kw_entry = tk.Entry(frame, textvariable=self.kw_var, width=12, justify="center")
-        kw_entry.grid(row=5, column=1, padx=5)
+        style_entry(kw_entry)
+        kw_entry.grid(row=5, column=1, padx=6)
         self.control_widgets.append(kw_entry)
 
     def _build_controls_frame(self, parent):
-        frame = tk.LabelFrame(parent, text="Camera controls", font=("Georgia", 11, "bold"), padx=10, pady=10)
-        frame.pack(fill="x", pady=(0, 10))
+        frame = ttk.LabelFrame(parent, text="Camera controls", padding=12)
+        frame.pack(fill="x", pady=(0, 12))
 
         def add_slider_row(row, label, var, lo, hi, resolution, attr_name):
-            tk.Label(frame, text=label, width=16, anchor="w").grid(row=row, column=0, sticky="w", pady=3)
+            tk.Label(
+                frame, text=label, width=16, anchor="w", bg=COLORS["surface"], fg=COLORS["text"], font=FONT_BASE,
+            ).grid(row=row, column=0, sticky="w", pady=4)
             scale = tk.Scale(
                 frame, from_=lo, to=hi, resolution=resolution, orient="horizontal",
                 variable=var, length=200, showvalue=0, command=self._apply_controls,
+                bg=COLORS["surface"], troughcolor="#c3c9d4", fg=COLORS["primary"],
+                activebackground=COLORS["primary"], highlightthickness=0, bd=0,
+                sliderrelief="flat",
             )
-            scale.grid(row=row, column=1, padx=5)
+            scale.grid(row=row, column=1, padx=6)
             entry = tk.Entry(frame, textvariable=var, width=8, justify="center")
-            entry.grid(row=row, column=2, padx=5)
+            style_entry(entry)
+            entry.grid(row=row, column=2, padx=6)
             entry.bind("<Return>", self._apply_controls)
             entry.bind("<FocusOut>", self._apply_controls)
             self.control_widgets.extend([scale, entry])
@@ -385,22 +492,28 @@ class CameraTestGUI:
         add_slider_row(1, "Gain", self.gain_var, gain_lo, gain_hi, 0.1, "gain_scale")
         add_slider_row(2, "Lens position", self.lens_var, lens_lo, lens_hi, 0.05, "lens_scale")
 
-        tk.Label(frame, text="AWB red gain", width=16, anchor="w").grid(row=3, column=0, sticky="w", pady=3)
+        tk.Label(
+            frame, text="AWB red gain", width=16, anchor="w", bg=COLORS["surface"], fg=COLORS["text"], font=FONT_BASE,
+        ).grid(row=3, column=0, sticky="w", pady=4)
         awb_r_entry = tk.Entry(frame, textvariable=self.awb_r_var, width=8, justify="center")
-        awb_r_entry.grid(row=3, column=1, padx=5, sticky="w")
+        style_entry(awb_r_entry)
+        awb_r_entry.grid(row=3, column=1, padx=6, sticky="w")
         awb_r_entry.bind("<Return>", self._apply_controls)
         awb_r_entry.bind("<FocusOut>", self._apply_controls)
 
-        tk.Label(frame, text="AWB blue gain", width=16, anchor="w").grid(row=4, column=0, sticky="w", pady=3)
+        tk.Label(
+            frame, text="AWB blue gain", width=16, anchor="w", bg=COLORS["surface"], fg=COLORS["text"], font=FONT_BASE,
+        ).grid(row=4, column=0, sticky="w", pady=4)
         awb_b_entry = tk.Entry(frame, textvariable=self.awb_b_var, width=8, justify="center")
-        awb_b_entry.grid(row=4, column=1, padx=5, sticky="w")
+        style_entry(awb_b_entry)
+        awb_b_entry.grid(row=4, column=1, padx=6, sticky="w")
         awb_b_entry.bind("<Return>", self._apply_controls)
         awb_b_entry.bind("<FocusOut>", self._apply_controls)
 
         self.control_widgets.extend([awb_r_entry, awb_b_entry])
 
     def _build_preview_frame(self, parent):
-        frame = tk.LabelFrame(parent, text="Live preview", font=("Georgia", 11, "bold"), padx=10, pady=10)
+        frame = ttk.LabelFrame(parent, text="Live preview", padding=12)
         frame.pack(fill="both", expand=True)
 
         # A Label's width/height are character units unless it already holds an
@@ -409,52 +522,108 @@ class CameraTestGUI:
         # around so the panel can be reset back to black whenever preview stops.
         self._black_placeholder = ImageTk.PhotoImage(Image.new("RGB", PREVIEW_SIZE, "black"))
         self._preview_photo = self._black_placeholder
-        self.preview_label = tk.Label(frame, image=self._preview_photo, bg="black")
-        self.preview_label.pack(pady=10)
+        preview_border = tk.Frame(frame, bg=COLORS["header_bg"], padx=2, pady=2)
+        preview_border.pack(pady=(0, 10))
+        self.preview_label = tk.Label(preview_border, image=self._preview_photo, bg="black")
+        self.preview_label.pack()
+
+        # Snapshot thumbnails captured during the current/last recording.
+        # Labels are created on demand per thumbnail (sidesteps the
+        # width/height-is-character-units gotcha for empty Labels) and
+        # wrap into a new row every THUMBS_PER_ROW.
+        tk.Label(
+            frame, text="Snapshots", bg=COLORS["surface"], fg=COLORS["text_muted"], font=FONT_BASE,
+        ).pack(anchor="w")
+        self.snapshot_strip = tk.Frame(frame, bg=COLORS["surface"])
+        self.snapshot_strip.pack(pady=(4, 10), fill="x")
+        self._snapshot_thumb_labels = []
+        self._snapshot_thumb_photos = []
 
         # Deliberately NOT added to control_widgets: live view should stay
         # toggleable during recording, not get greyed out.
-        self.button_preview = tk.Button(
-            frame, text="Preview", bg="#D3D3D3", width=12, font=("Georgia", 11),
-            command=self.toggle_preview,
-        )
+        self.button_preview = tk.Button(frame, text="Preview", width=12, command=self.toggle_preview)
+        style_button(self.button_preview, "primary")
         self.button_preview.pack(pady=5)
 
-    def _build_action_frame(self, parent):
-        tk.Label(parent, text="Duration (s)").grid(row=0, column=0, padx=10)
-        duration_entry = tk.Entry(parent, textvariable=self.duration_var, width=8, justify="center")
-        duration_entry.grid(row=0, column=1, padx=10)
+    def _clear_snapshot_thumbnails(self):
+        for label in self._snapshot_thumb_labels:
+            label.destroy()
+        self._snapshot_thumb_labels = []
+        self._snapshot_thumb_photos = []
 
-        tk.Label(parent, text="Snapshots").grid(row=0, column=2, padx=10)
-        snaps_entry = tk.Entry(parent, textvariable=self.n_snaps_var, width=8, justify="center")
-        snaps_entry.grid(row=0, column=3, padx=10)
-
-        self.button_record = tk.Button(
-            parent, text="Record", bg="#D3D3D3", width=15, font=("Georgia", 11, "bold"),
-            command=self.on_record_clicked,
+    def _add_snapshot_thumbnail(self, pil_thumb, snap_index):
+        photo = ImageTk.PhotoImage(pil_thumb)
+        self._snapshot_thumb_photos.append(photo)  # keep a live ref, Tk won't
+        row, col = divmod(len(self._snapshot_thumb_labels), THUMBS_PER_ROW)
+        label = tk.Label(
+            self.snapshot_strip, image=photo, bd=1, relief="solid",
+            highlightbackground=COLORS["border"], highlightthickness=1,
         )
-        self.button_record.grid(row=0, column=4, padx=20)
+        label.grid(row=row, column=col, padx=3, pady=3)
+        self._snapshot_thumb_labels.append(label)
+
+    def _build_action_frame(self, parent):
+        card = tk.Frame(parent, bg=COLORS["surface"], highlightbackground=COLORS["border"], highlightthickness=1)
+        card.pack(fill="x")
+        inner = tk.Frame(card, bg=COLORS["surface"], padx=15, pady=12)
+        inner.pack(fill="x")
+
+        tk.Label(inner, text="Duration (s)", bg=COLORS["surface"], fg=COLORS["text"], font=FONT_BASE).grid(
+            row=0, column=0, padx=(0, 8)
+        )
+        duration_entry = tk.Entry(inner, textvariable=self.duration_var, width=8, justify="center")
+        style_entry(duration_entry)
+        duration_entry.grid(row=0, column=1, padx=(0, 20))
+
+        tk.Label(inner, text="Snapshots", bg=COLORS["surface"], fg=COLORS["text"], font=FONT_BASE).grid(
+            row=0, column=2, padx=(0, 8)
+        )
+        snaps_entry = tk.Entry(inner, textvariable=self.n_snaps_var, width=8, justify="center")
+        style_entry(snaps_entry)
+        snaps_entry.grid(row=0, column=3, padx=(0, 20))
+
+        self.button_record = tk.Button(inner, text="Record", width=15, command=self.on_record_clicked)
+        style_button(self.button_record, "primary")
+        self.button_record.grid(row=0, column=4, padx=(0, 12))
 
         # Deliberately NOT added to control_widgets: that list gets disabled
         # during recording, but this button must stay live *only* during
         # recording (the opposite lifecycle), so its enabled state is
         # toggled directly in on_record_clicked / _record_finished.
         self.button_emergency_stop = tk.Button(
-            parent, text="EMERGENCY STOP", bg="#DC143C", fg="white", width=16,
-            font=("Georgia", 11, "bold"), state=tk.DISABLED,
-            command=self._on_emergency_stop,
+            inner, text="EMERGENCY STOP", width=16, state=tk.DISABLED, command=self._on_emergency_stop,
         )
-        self.button_emergency_stop.grid(row=0, column=5, padx=20)
+        style_button(self.button_emergency_stop, "danger")
+        self.button_emergency_stop.grid(row=0, column=5)
 
         self.control_widgets.extend([duration_entry, snaps_entry, self.button_record])
 
-        tk.Label(parent, textvariable=self.status_var, fg="black", font=("Arial", 10)).grid(
-            row=1, column=0, columnspan=5, pady=(10, 0)
+        tk.Label(
+            inner, textvariable=self.status_var, bg=COLORS["surface"], fg=COLORS["text"], font=FONT_BASE,
+        ).grid(row=1, column=0, columnspan=6, sticky="w", pady=(12, 0))
+
+        self._last_output_folder = None
+        self.folder_link_var = tk.StringVar(value="")
+        self.label_folder_link = tk.Label(
+            inner, textvariable=self.folder_link_var, bg=COLORS["surface"], fg=COLORS["primary"],
+            cursor="hand2", font=(FONT_FAMILY, 10, "underline"),
         )
+        self.label_folder_link.grid(row=2, column=0, columnspan=6, sticky="w", pady=(2, 0))
+        self.label_folder_link.bind("<Button-1>", self._open_output_folder)
+
+    def _open_output_folder(self, event=None):
+        if not self._last_output_folder:
+            return
+        try:
+            subprocess.Popen(["xdg-open", self._last_output_folder])
+        except OSError as exc:
+            messagebox.showerror(
+                "Open folder", f"Could not open folder:\n{self._last_output_folder}\n\n{exc}"
+            )
 
     def _build_settings_tab(self, parent):
         self._settings_form_vars = {}
-        outer = tk.Frame(parent, padx=15, pady=15)
+        outer = ttk.Frame(parent, padding=15)
         outer.pack(fill="both", expand=True)
 
         def add_form_var(key, value):
@@ -462,13 +631,30 @@ class CameraTestGUI:
             self._settings_form_vars[key] = var
             return var
 
-        preset_frame = tk.LabelFrame(
-            outer, text="Test condition presets & defaults", font=("Georgia", 11, "bold"), padx=10, pady=10
-        )
-        preset_frame.pack(fill="x", pady=(0, 10))
-        tk.Label(preset_frame, text="Field", font=("Georgia", 10, "bold"), width=16, anchor="w").grid(row=0, column=0, sticky="w")
-        tk.Label(preset_frame, text="Selectable values (comma-separated)", font=("Georgia", 10, "bold")).grid(row=0, column=1, sticky="w")
-        tk.Label(preset_frame, text="Default", font=("Georgia", 10, "bold")).grid(row=0, column=2)
+        def col_header(container, text, col, anchor="w"):
+            sticky = anchor if anchor in ("w", "e") else ""
+            tk.Label(
+                container, text=text, font=(FONT_FAMILY, 9, "bold"), bg=COLORS["surface"],
+                fg=COLORS["text_muted"], anchor=anchor,
+            ).grid(row=0, column=col, sticky=sticky, pady=(0, 6))
+
+        def row_label(container, text, row):
+            tk.Label(
+                container, text=text, width=16, anchor="w", bg=COLORS["surface"], fg=COLORS["text"],
+                font=FONT_BASE,
+            ).grid(row=row, column=0, sticky="w", pady=4)
+
+        def make_entry(container, var, row, col, width=10, sticky=None, padx=6):
+            entry = tk.Entry(container, textvariable=var, width=width, justify="center")
+            style_entry(entry)
+            entry.grid(row=row, column=col, padx=padx, sticky=sticky)
+            return entry
+
+        preset_frame = ttk.LabelFrame(outer, text="Test condition presets & defaults", padding=12)
+        preset_frame.pack(fill="x", pady=(0, 12))
+        col_header(preset_frame, "Field", 0)
+        col_header(preset_frame, "Selectable values (comma-separated)", 1)
+        col_header(preset_frame, "Default", 2)
 
         preset_fields = [
             ("blend_gas", "Blending gas"),
@@ -478,20 +664,18 @@ class CameraTestGUI:
             ("lance_size", "Lance size (mm)"),
         ]
         for row, (key, label) in enumerate(preset_fields, start=1):
-            tk.Label(preset_frame, text=label, width=16, anchor="w").grid(row=row, column=0, sticky="w", pady=3)
+            row_label(preset_frame, label, row)
             values_var = add_form_var(f"{key}_values", ", ".join(str(v) for v in self.presets[key]))
-            tk.Entry(preset_frame, textvariable=values_var, width=42).grid(row=row, column=1, padx=5, sticky="w")
+            make_entry(preset_frame, values_var, row, 1, width=44, sticky="w")
             default_var = add_form_var(f"{key}_default", self.defaults[key])
-            tk.Entry(preset_frame, textvariable=default_var, width=10, justify="center").grid(row=row, column=2, padx=5)
+            make_entry(preset_frame, default_var, row, 2)
 
-        range_frame = tk.LabelFrame(
-            outer, text="Camera control ranges & defaults", font=("Georgia", 11, "bold"), padx=10, pady=10
-        )
-        range_frame.pack(fill="x", pady=(0, 10))
-        tk.Label(range_frame, text="Field", font=("Georgia", 10, "bold"), width=16, anchor="w").grid(row=0, column=0, sticky="w")
-        tk.Label(range_frame, text="Min", font=("Georgia", 10, "bold")).grid(row=0, column=1)
-        tk.Label(range_frame, text="Max", font=("Georgia", 10, "bold")).grid(row=0, column=2)
-        tk.Label(range_frame, text="Default", font=("Georgia", 10, "bold")).grid(row=0, column=3)
+        range_frame = ttk.LabelFrame(outer, text="Camera control ranges & defaults", padding=12)
+        range_frame.pack(fill="x", pady=(0, 12))
+        col_header(range_frame, "Field", 0)
+        col_header(range_frame, "Min", 1, anchor="center")
+        col_header(range_frame, "Max", 2, anchor="center")
+        col_header(range_frame, "Default", 3, anchor="center")
 
         range_fields = [
             ("shutter", "Shutter (us)"),
@@ -499,19 +683,17 @@ class CameraTestGUI:
             ("lens", "Lens position"),
         ]
         for row, (key, label) in enumerate(range_fields, start=1):
-            tk.Label(range_frame, text=label, width=16, anchor="w").grid(row=row, column=0, sticky="w", pady=3)
+            row_label(range_frame, label, row)
             lo, hi = self.ranges[key]
             min_var = add_form_var(f"{key}_min", lo)
-            tk.Entry(range_frame, textvariable=min_var, width=10, justify="center").grid(row=row, column=1, padx=5)
+            make_entry(range_frame, min_var, row, 1)
             max_var = add_form_var(f"{key}_max", hi)
-            tk.Entry(range_frame, textvariable=max_var, width=10, justify="center").grid(row=row, column=2, padx=5)
+            make_entry(range_frame, max_var, row, 2)
             default_var = add_form_var(f"{key}_default", self.defaults[key])
-            tk.Entry(range_frame, textvariable=default_var, width=10, justify="center").grid(row=row, column=3, padx=5)
+            make_entry(range_frame, default_var, row, 3)
 
-        other_frame = tk.LabelFrame(
-            outer, text="Other defaults", font=("Georgia", 11, "bold"), padx=10, pady=10
-        )
-        other_frame.pack(fill="x", pady=(0, 10))
+        other_frame = ttk.LabelFrame(outer, text="Other defaults", padding=12)
+        other_frame.pack(fill="x", pady=(0, 12))
         other_fields = [
             ("kw", "kW default"),
             ("awb_r", "AWB red gain default"),
@@ -521,22 +703,23 @@ class CameraTestGUI:
         ]
         for i, (key, label) in enumerate(other_fields):
             row, col = divmod(i, 3)
-            tk.Label(other_frame, text=label, anchor="w").grid(
-                row=row, column=col * 2, sticky="w", padx=(0 if col == 0 else 15, 5), pady=3
-            )
+            tk.Label(
+                other_frame, text=label, anchor="w", bg=COLORS["surface"], fg=COLORS["text"], font=FONT_BASE,
+            ).grid(row=row, column=col * 2, sticky="w", padx=(0 if col == 0 else 15, 6), pady=4)
             var = add_form_var(f"{key}_default", self.defaults[key])
-            tk.Entry(other_frame, textvariable=var, width=10, justify="center").grid(row=row, column=col * 2 + 1, padx=5)
+            make_entry(other_frame, var, row, col * 2 + 1)
 
-        button_row = tk.Frame(outer)
-        button_row.pack(pady=10)
+        button_row = ttk.Frame(outer)
+        button_row.pack(pady=(4, 10))
         self.button_settings_apply = tk.Button(
-            button_row, text="Save & Apply", bg="#D3D3D3", width=14, font=("Georgia", 11, "bold"),
-            command=self._on_settings_apply,
+            button_row, text="Save & Apply", width=14, command=self._on_settings_apply,
         )
+        style_button(self.button_settings_apply, "primary")
         self.button_settings_apply.pack(side="left", padx=5)
         self.button_settings_restore = tk.Button(
             button_row, text="Restore Factory Defaults", width=22, command=self._on_settings_restore_factory,
         )
+        style_button(self.button_settings_restore, "secondary")
         self.button_settings_restore.pack(side="left", padx=5)
         # Disabled during recording along with everything else in
         # control_widgets, so a mid-recording preset/range change can't
@@ -544,7 +727,7 @@ class CameraTestGUI:
         self.control_widgets.extend([self.button_settings_apply, self.button_settings_restore])
 
         self.settings_status_var = tk.StringVar(value="")
-        tk.Label(outer, textvariable=self.settings_status_var, fg="black", font=("Arial", 10)).pack(pady=(5, 0))
+        ttk.Label(outer, textvariable=self.settings_status_var).pack(pady=(0, 0))
 
     def _refresh_settings_form(self):
         for key in ("blend_gas", "blend_ratio", "phi", "lance_depth", "lance_size"):
@@ -655,27 +838,32 @@ class CameraTestGUI:
     # Generalized picklist popup
     # ---------------------------------------------------------------- #
     def show_picklist(self, title, values, target_var):
-        local_choice = tk.StringVar(value=str(values[0]))
+        current = target_var.get()
+        local_choice = tk.StringVar(value=current if current in [str(v) for v in values] else str(values[0]))
 
         def select():
             target_var.set(local_choice.get())
             sub_window.destroy()
 
-        sub_window = tk.Toplevel(self.root)
+        sub_window = tk.Toplevel(self.root, bg=COLORS["surface"])
         sub_window.title(title)
-        sub_window.geometry("250x400")
         sub_window.transient(self.root)
+        sub_window.resizable(False, False)
         sub_window.grab_set()
 
-        tk.Label(sub_window, text=title, fg="#666666", font=("Georgia",), pady=10).pack()
+        tk.Label(
+            sub_window, text=title, bg=COLORS["surface"], fg=COLORS["text"], font=FONT_SECTION, pady=12,
+        ).pack(padx=20)
         for v in values:
-            tk.Radiobutton(sub_window, text=str(v), value=str(v), variable=local_choice).pack(
-                ipadx=90, anchor="w"
-            )
+            tk.Radiobutton(
+                sub_window, text=str(v), value=str(v), variable=local_choice,
+                bg=COLORS["surface"], fg=COLORS["text"], font=FONT_BASE, selectcolor=COLORS["primary_light"],
+                activebackground=COLORS["surface"], anchor="w", padx=20,
+            ).pack(fill="x", padx=20)
 
-        tk.Button(
-            sub_window, text="Select", bg="#D3D3D3", font=("Georgia", 11), width=8, command=select
-        ).pack(padx=70, pady=10)
+        button = tk.Button(sub_window, text="Select", width=10, command=select)
+        style_button(button, "primary")
+        button.pack(pady=16)
 
     # ---------------------------------------------------------------- #
     # Camera lifecycle
@@ -858,13 +1046,14 @@ class CameraTestGUI:
             result["choice"] = choice
             dialog.destroy()
 
-        dialog = tk.Toplevel(self.root)
+        dialog = tk.Toplevel(self.root, bg=COLORS["surface"])
         dialog.title("Folder already exists")
         dialog.transient(self.root)
+        dialog.resizable(False, False)
         dialog.protocol("WM_DELETE_WINDOW", lambda: pick("cancel"))
 
         tk.Label(
-            dialog, fg="#666666", font=("Georgia",), pady=10, justify="left",
+            dialog, bg=COLORS["surface"], fg=COLORS["text"], font=FONT_BASE, pady=14, justify="left",
             text=(
                 f"A recording already exists for this exact condition today:\n\n"
                 f"{os.path.basename(candidate)}\n\n"
@@ -872,14 +1061,17 @@ class CameraTestGUI:
             ),
         ).pack(padx=20)
 
-        button_row = tk.Frame(dialog)
-        button_row.pack(pady=10)
-        tk.Button(button_row, text="Overwrite", bg="#DC143C", fg="white", width=12,
-                  command=lambda: pick("overwrite")).pack(side="left", padx=5)
-        tk.Button(button_row, text="New Run", bg="#D3D3D3", width=12,
-                  command=lambda: pick("new_run")).pack(side="left", padx=5)
-        tk.Button(button_row, text="Cancel", width=12,
-                  command=lambda: pick("cancel")).pack(side="left", padx=5)
+        button_row = tk.Frame(dialog, bg=COLORS["surface"])
+        button_row.pack(pady=14)
+        btn_overwrite = tk.Button(button_row, text="Overwrite", width=12, command=lambda: pick("overwrite"))
+        style_button(btn_overwrite, "danger")
+        btn_overwrite.pack(side="left", padx=5)
+        btn_new_run = tk.Button(button_row, text="New Run", width=12, command=lambda: pick("new_run"))
+        style_button(btn_new_run, "primary")
+        btn_new_run.pack(side="left", padx=5)
+        btn_cancel = tk.Button(button_row, text="Cancel", width=12, command=lambda: pick("cancel"))
+        style_button(btn_cancel, "secondary")
+        btn_cancel.pack(side="left", padx=5)
 
         dialog.grab_set()
         self.root.wait_window(dialog)
@@ -950,6 +1142,8 @@ class CameraTestGUI:
         self._set_controls_enabled(False)
         self.button_emergency_stop.config(state=tk.NORMAL)
         self.status_var.set(f"Recording to {output_folder} ...")
+        self._clear_snapshot_thumbnails()
+        self.folder_link_var.set("")
 
         # Live view should stay visible through the whole recording, so make
         # sure it's actually running even if the user never clicked Preview.
@@ -1006,6 +1200,16 @@ class CameraTestGUI:
                         self._set_status,
                         (f"Captured {os.path.basename(snap_path)} ({snap_index}/{n_snaps})",),
                     ))
+                    # Pure-PIL resize here (no Tk calls off the main thread,
+                    # same discipline as the preview frames) - the callback
+                    # only creates the PhotoImage, on the main thread.
+                    try:
+                        thumb = Image.open(snap_path)
+                        thumb.thumbnail(THUMB_SIZE)
+                        thumb = thumb.convert("RGB")
+                        self._gui_queue.put((self._add_snapshot_thumbnail, (thumb, snap_index)))
+                    except Exception:
+                        pass
                 elif self.preview_active and now - last_preview_t >= preview_period:
                     epoch = self._preview_epoch
                     try:
@@ -1060,7 +1264,9 @@ class CameraTestGUI:
             messagebox.showerror("Recording failed", str(error))
             self.status_var.set(f"Recording failed: {error}")
         else:
-            self.status_var.set(f"Done. Saved to: {output_folder}")
+            self.status_var.set("Recording complete.")
+            self._last_output_folder = output_folder
+            self.folder_link_var.set(f"Open folder: {os.path.basename(output_folder)}")
 
 
 if __name__ == "__main__":
