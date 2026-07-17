@@ -1,0 +1,4 @@
+__pycache__/
+*.pyc
+.vs/
+gui12_settings.json
