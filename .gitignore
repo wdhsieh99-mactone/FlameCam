@@ -2,3 +2,8 @@ __pycache__/
 *.pyc
 .vs/
 gui12_settings.json
+mediamtx
+mediamtx_*.tar.gz
+*.mp4
+*.h264
+*.tmp
