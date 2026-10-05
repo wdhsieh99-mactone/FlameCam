@@ -93,13 +93,10 @@
 FlameCam/
 ├── GUI_17.py               # 最新版核心主程式 (建議直接執行此檔)
 ├── main.py                 # 主程式啟動入口封裝
-├── gui12_settings.json     # 系統設定檔 (自動儲存各項預設值與上下限)
-├── mediamtx.yml            # RTSP / WebRTC 串流伺服器設定
+├── ReFlowLab_signature.gif # 實驗室 Logo 圖示
 ├── LICENSE                 # MIT 開源授權條款
 ├── README.md               # 專案中文說明文件
-├── c3h8.txt                # 丙烷實驗參數設定模板
-├── ch4(0).txt              # 甲烷實驗參數設定模板
-├── NH3.txt                 # 氨氣實驗參數設定模板
+├── gui12_settings.json     # 系統設定檔 (本地自動生成與儲存)
 └── docs/
     └── screenshots/        # 系統截圖展示
         ├── flamecam_main.png

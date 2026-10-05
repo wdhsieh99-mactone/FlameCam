@@ -556,7 +556,8 @@ class CameraTestGUI:
         ).pack(side="left", padx=(4, 0))
 
         try:
-            self.img = tk.PhotoImage(file="ReFlowLab_signature.gif")
+            logo_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "ReFlowLab_signature.gif")
+            self.img = tk.PhotoImage(file=logo_path)
             tk.Label(header_inner, image=self.img, bg=COLORS["header_bg"]).pack(side="right", padx=(10, 0))
         except tk.TclError:
             self.img = None
